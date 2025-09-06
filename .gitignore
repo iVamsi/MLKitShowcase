@@ -1,0 +1,59 @@
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+
+# Android
+*.apk
+*.ap_
+*.aab
+*.dex
+*.class
+local.properties
+.gradle/
+build/
+/*/build/
+.navigation/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystore files
+*.jks
+*.keystore
+
+# Google Services (API keys)
+google-services.json
+
+# Signing files
+.signing/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+
+# Generated files
+bin/
+gen/
+out/
+
+# Gradle files
+.gradle/
+gradle-app.setting
+
+# JaCoCo coverage reports
+*.exec
+**/jacoco/
+
+# Testing
+/androidTest/build
+/test/build

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ML Kit Showcase</string>
+    <string name="barcode_scanner">Barcode Scanner</string>
+    <string name="text_recognizer">Text Recognition</string>
+    <string name="scan_barcode">Scan Barcode</string>
+    <string name="scan_text">Scan Text</string>
+    <string name="camera_permission_required">Camera permission is required for scanning</string>
+    <string name="grant_permission">Grant Permission</string>
+    <string name="point_camera_at_barcode">Point camera at a barcode</string>
+    <string name="point_camera_at_text">Point camera at text to recognize</string>
+    <string name="scanning">Scanning...</string>
+    <string name="no_barcode_found">No barcode found</string>
+    <string name="no_text_found">No text found</string>
+    <string name="scan_result">Scan Result</string>
+    <string name="close">Close</string>
+    <string name="try_again">Try Again</string>
+    <string name="ml_kit_scanner_demo">ML Kit Showcase</string>
+    <string name="choose_scan_type">Choose scanning type:</string>
+</resources>
