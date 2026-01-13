@@ -17,7 +17,7 @@ mlkitTextRecognition = "16.0.1"
 mlkitBarcodeScanning = "17.3.0"
 camerax = "1.5.2"
 accompanistPermissions = "0.37.3"
-ksp = "2.2.21-2.0.2"
+ksp = "2.2.21-2.0.4"
 composeCompiler = "1.5.15"
 appcompat = "1.7.1"
 
