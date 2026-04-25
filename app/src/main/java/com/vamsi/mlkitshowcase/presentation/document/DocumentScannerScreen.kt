@@ -1,8 +1,11 @@
 package com.vamsi.mlkitshowcase.presentation.document
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.ContextWrapper
+import android.os.FileUriExposedException
+import android.widget.ImageView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -10,7 +13,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.Button
@@ -27,10 +33,17 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.net.toUri
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.mlkit.common.MlKitException
@@ -50,6 +63,7 @@ fun DocumentScannerScreen(
 ) {
     val context = LocalContext.current
     val uiState by viewModel.uiState.collectAsStateWithLifecycle()
+    var openErrorMessage by remember { mutableStateOf<String?>(null) }
     val launcher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
     ) { activityResult ->
@@ -82,7 +96,8 @@ fun DocumentScannerScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(24.dp),
+                .padding(24.dp)
+                .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
@@ -120,9 +135,27 @@ fun DocumentScannerScreen(
                 }
 
                 is DocumentScannerUiState.Success -> {
-                    DocumentResultCard(state.result)
+                    DocumentResultCard(
+                        result = state.result,
+                        onOpenTarget = { target ->
+                            context.openDocumentTarget(
+                                target = target,
+                                onError = { message -> openErrorMessage = message }
+                            )
+                        }
+                    )
+                    openErrorMessage?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
                     OutlinedButton(
-                        onClick = viewModel::idle,
+                        onClick = {
+                            openErrorMessage = null
+                            viewModel.idle()
+                        },
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text("Scan another document")
@@ -148,7 +181,10 @@ fun DocumentScannerScreen(
 }
 
 @Composable
-private fun DocumentResultCard(result: DocumentScanResult) {
+private fun DocumentResultCard(
+    result: DocumentScanResult,
+    onOpenTarget: (DocumentOpenTarget) -> Unit,
+) {
     Card(
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant
@@ -160,12 +196,60 @@ private fun DocumentResultCard(result: DocumentScanResult) {
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
             Text(
-                text = "${result.pageCount} pages",
+                text = result.pageLabel,
                 style = MaterialTheme.typography.titleLarge
             )
             Text("JPEG pages: ${result.imageUris.size}")
             Text("PDF: ${if (result.pdfUri != null) "available" else "not returned"}")
+            result.imageUris.firstOrNull()?.let { pageUri ->
+                DocumentPagePreview(uriString = pageUri)
+                OutlinedButton(
+                    onClick = { onOpenTarget(DocumentOpenTarget.PageImage(pageUri)) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Open page image")
+                }
+            }
+            result.pdfUri?.let { pdfUri ->
+                Button(
+                    onClick = { onOpenTarget(DocumentOpenTarget.Pdf(pdfUri)) },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Open PDF")
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun DocumentPagePreview(uriString: String) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        AndroidView(
+            factory = { context ->
+                ImageView(context).apply {
+                    adjustViewBounds = true
+                    scaleType = ImageView.ScaleType.FIT_CENTER
+                    contentDescription = "Preview of scanned page 1"
+                }
+            },
+            update = { imageView ->
+                runCatching {
+                    imageView.setImageURI(uriString.toUri())
+                }
+            },
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 180.dp, max = 360.dp)
+                .semantics {
+                    contentDescription = "Preview of scanned page 1"
+                }
+        )
     }
 }
 
@@ -212,6 +296,26 @@ private fun Throwable.toDocumentScannerMessage(): String = when (this) {
     }
 
     else -> "Document scanner failed: ${message ?: "unknown error"}"
+}
+
+private val DocumentScanResult.pageLabel: String
+    get() = "$pageCount ${if (pageCount == 1) "page" else "pages"}"
+
+private fun Context.openDocumentTarget(
+    target: DocumentOpenTarget,
+    onError: (String) -> Unit,
+) {
+    try {
+        startActivity(target.toViewIntent(this))
+    } catch (exception: ActivityNotFoundException) {
+        onError("No app is available to open this scan.")
+    } catch (exception: FileUriExposedException) {
+        onError("Unable to share this scan file.")
+    } catch (exception: IllegalArgumentException) {
+        onError("Unable to prepare this scan file.")
+    } catch (exception: SecurityException) {
+        onError("The scanned file is no longer available. Scan the document again.")
+    }
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {
