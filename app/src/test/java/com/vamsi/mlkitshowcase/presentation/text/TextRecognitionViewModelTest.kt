@@ -96,14 +96,14 @@ class TextRecognitionViewModelTest {
     fun `getImageAnalyzer should return analyzer from recognizer`() = runTest {
         // Given
         val mockAnalyzer = mockk<ImageAnalysis.Analyzer>()
-        coEvery { mockTextRecognizer.getImageAnalyzer() } returns mockAnalyzer
+        every { mockTextRecognizer.getImageAnalyzer(any()) } returns mockAnalyzer
 
         // When
         val result = viewModel.getImageAnalyzer()
 
         // Then
         assertThat(result).isEqualTo(mockAnalyzer)
-        coVerify { mockTextRecognizer.getImageAnalyzer() }
+        verify { mockTextRecognizer.getImageAnalyzer(any()) }
     }
 
     @Test

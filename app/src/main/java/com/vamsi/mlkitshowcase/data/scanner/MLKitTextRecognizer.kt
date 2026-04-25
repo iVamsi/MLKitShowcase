@@ -1,149 +1,118 @@
 package com.vamsi.mlkitshowcase.data.scanner
 
+import android.content.Context
+import android.graphics.Rect
+import android.net.Uri
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
+import androidx.camera.mlkit.vision.MlKitAnalyzer
 import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.TextRecognizer
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import com.vamsi.mlkitshowcase.domain.model.ScanResult
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.receiveAsFlow
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import javax.inject.Inject
-import javax.inject.Singleton
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * ML Kit Text Recognition implementation
- *
- * This class demonstrates how to use ML Kit's on-device text recognition capabilities.
- *
- * Key features:
- * - On-device processing (no internet required after model download)
- * - Supports Latin script text recognition
- * - Real-time text extraction with CameraX integration
- * - Automatic model download on first use
- * - Confidence scoring for recognition results
- *
- * Usage:
- * 1. Call startScanning() to begin
- * 2. Use getImageAnalyzer() with CameraX
- * 3. Collect results from scanResults flow
- * 4. Call stopScanning() when done
- *
- * Supported Languages:
- * - English and other Latin-script languages
- * - For other scripts (Chinese, Arabic, etc.), use different TextRecognizerOptions
- */
-@Singleton
 class MLKitTextRecognizer @Inject constructor() {
 
-    // Configure text recognizer for Latin script (English, Spanish, French, etc.)
-    private val textRecognizer: TextRecognizer by lazy {
-        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    }
+    private val _scanResults = MutableSharedFlow<ScanResult>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val scanResults: Flow<ScanResult> = _scanResults.asSharedFlow()
 
-    private val _scanResults = Channel<ScanResult>(Channel.UNLIMITED)
-    val scanResults: Flow<ScanResult> = _scanResults.receiveAsFlow()
+    private val _detectedBounds = MutableStateFlow<List<Rect>>(emptyList())
+    val detectedBounds: StateFlow<List<Rect>> = _detectedBounds.asStateFlow()
 
+    private var activeRecognizer: TextRecognizer? = null
     private var isScanning = false
 
-    /**
-     * Start the scanning process
-     */
     fun startScanning() {
+        _detectedBounds.value = emptyList()
         isScanning = true
     }
 
-    /**
-     * Stop the scanning process
-     */
     fun stopScanning() {
         isScanning = false
+        _detectedBounds.value = emptyList()
     }
 
-    /**
-     * Get ImageAnalysis.Analyzer for CameraX integration
-     */
-    fun getImageAnalyzer(): ImageAnalysis.Analyzer {
-        return TextAnalyzer(textRecognizer) { result ->
-            if (isScanning) {
-                _scanResults.trySend(result)
+    fun close() {
+        stopScanning()
+        activeRecognizer?.close()
+        activeRecognizer = null
+    }
+
+    fun getImageAnalyzer(
+        analysisExecutor: Executor = Executors.newSingleThreadExecutor(),
+    ): ImageAnalysis.Analyzer {
+        activeRecognizer?.close()
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        activeRecognizer = recognizer
+
+        return MlKitAnalyzer(
+            listOf(recognizer),
+            ImageAnalysis.COORDINATE_SYSTEM_VIEW_REFERENCED,
+            analysisExecutor
+        ) { result ->
+            if (!isScanning) return@MlKitAnalyzer
+
+            val throwable = result.getThrowable(recognizer)
+            if (throwable != null) {
+                _scanResults.tryEmit(ScanResult.Error(throwable.toRecognitionMessage(), throwable))
+                return@MlKitAnalyzer
             }
+
+            val text = result.getValue(recognizer)
+            if (text == null || text.text.isBlank()) {
+                _detectedBounds.value = emptyList()
+                _scanResults.tryEmit(ScanResult.NoResult)
+                return@MlKitAnalyzer
+            }
+
+            _detectedBounds.value = text.textBlocks.mapNotNull { it.boundingBox }
+            _scanResults.tryEmit(ScanResult.TextResult(TextResultMapper.map(text)))
         }
     }
 
-    /**
-     * ImageAnalysis.Analyzer implementation for text recognition
-     */
-    private class TextAnalyzer(
-        private val textRecognizer: TextRecognizer,
-        private val onResult: (ScanResult) -> Unit,
-    ) : ImageAnalysis.Analyzer {
-
-        private var lastAnalyzedTimestamp = 0L
-        private val analyzeEveryMs = 100L // Process every 100ms for battery optimization
-
-        @androidx.camera.core.ExperimentalGetImage
-        override fun analyze(imageProxy: ImageProxy) {
-            val currentTimestamp = System.currentTimeMillis()
-            if (currentTimestamp - lastAnalyzedTimestamp < analyzeEveryMs) {
-                imageProxy.close()
-                return
-            }
-            lastAnalyzedTimestamp = currentTimestamp
-            val mediaImage = imageProxy.image
-            if (mediaImage != null) {
-                val image = InputImage.fromMediaImage(
-                    mediaImage,
-                    imageProxy.imageInfo.rotationDegrees
+    fun scanImage(context: Context, uri: Uri) {
+        val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+        val image = InputImage.fromFilePath(context, uri)
+        recognizer.process(image)
+            .addOnSuccessListener { text ->
+                _detectedBounds.value = text.textBlocks.mapNotNull { it.boundingBox }
+                _scanResults.tryEmit(
+                    if (text.text.isBlank()) {
+                        ScanResult.NoResult
+                    } else {
+                        ScanResult.TextResult(TextResultMapper.map(text))
+                    }
                 )
-
-                textRecognizer.process(image)
-                    .addOnSuccessListener { visionText ->
-                        val text = visionText.text.trim()
-                        if (text.isNotEmpty()) {
-                            // Calculate average confidence from all text blocks
-                            val avgConfidence = if (visionText.textBlocks.isNotEmpty()) {
-                                visionText.textBlocks
-                                    .mapNotNull { block ->
-                                        // ML Kit doesn't provide confidence directly
-                                        // This is a placeholder - in practice, confidence 
-                                        // would come from the recognition result
-                                        0.8f // Simulated confidence
-                                    }
-                                    .average()
-                                    .toFloat()
-                            } else null
-
-                            val result = ScanResult.TextResult(
-                                text = text,
-                                confidence = avgConfidence
-                            )
-                            onResult(result)
-                        } else {
-                            onResult(ScanResult.NoResult)
-                        }
-                    }
-                    .addOnFailureListener { exception ->
-                        val errorMessage = when (exception) {
-                            is MlKitException -> when (exception.errorCode) {
-                                MlKitException.UNAVAILABLE -> "Downloading text recognition model, please wait..."
-                                MlKitException.NOT_ENOUGH_SPACE -> "Not enough storage for ML models"
-                                else -> "Text recognition failed: ${exception.message}"
-                            }
-
-                            else -> "Text recognition failed: ${exception.message}"
-                        }
-                        onResult(ScanResult.Error(errorMessage, exception))
-                    }
-                    .addOnCompleteListener {
-                        imageProxy.close()
-                    }
-            } else {
-                imageProxy.close()
             }
+            .addOnFailureListener { throwable ->
+                _scanResults.tryEmit(ScanResult.Error(throwable.toRecognitionMessage(), throwable))
+            }
+            .addOnCompleteListener {
+                recognizer.close()
+            }
+    }
+
+    private fun Throwable.toRecognitionMessage(): String = when (this) {
+        is MlKitException -> when (errorCode) {
+            MlKitException.UNAVAILABLE -> "Text recognition is not available yet."
+            MlKitException.NOT_ENOUGH_SPACE -> "Not enough storage for ML Kit text models."
+            else -> "Text recognition failed: ${message ?: "unknown error"}"
         }
+
+        else -> "Text recognition failed: ${message ?: "unknown error"}"
     }
 }

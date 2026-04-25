@@ -20,11 +20,11 @@ class MLKitTextRecognizerTest {
     }
 
     @Test
-    fun `text recognizer should be annotated with singleton`() {
+    fun `text recognizer should not be singleton scoped`() {
         // Given & When & Then
         val annotations = MLKitTextRecognizer::class.java.annotations
         val hasSingletonAnnotation =
                 annotations.any { it.annotationClass.simpleName == "Singleton" }
-        assertThat(hasSingletonAnnotation).isTrue()
+        assertThat(hasSingletonAnnotation).isFalse()
     }
 }

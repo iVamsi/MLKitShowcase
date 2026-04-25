@@ -1,11 +1,19 @@
 package com.vamsi.mlkitshowcase.presentation.barcode
 
+import android.content.Context
+import android.net.Uri
 import androidx.camera.core.ImageAnalysis
+import androidx.camera.view.LifecycleCameraController
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.vamsi.mlkitshowcase.data.scanner.MLKitBarcodeScanner
+import com.vamsi.mlkitshowcase.domain.model.ScanHistoryEntry
+import com.vamsi.mlkitshowcase.domain.model.ScanHistoryStore
 import com.vamsi.mlkitshowcase.domain.model.ScanResult
+import com.vamsi.mlkitshowcase.domain.model.ScannerMode
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import javax.inject.Inject
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
@@ -16,11 +24,15 @@ import kotlinx.coroutines.launch
  * Manages the state of barcode scanning and coordinates between the UI and the ML Kit scanner.
  */
 @HiltViewModel
-class BarcodeScannerViewModel @Inject constructor(private val barcodeScanner: MLKitBarcodeScanner) :
+class BarcodeScannerViewModel @Inject constructor(
+    private val barcodeScanner: MLKitBarcodeScanner,
+    private val historyStore: ScanHistoryStore = ScanHistoryStore(),
+) :
     ViewModel() {
 
     private val _uiState = MutableStateFlow<BarcodeScannerUiState>(BarcodeScannerUiState.Scanning)
     val uiState: StateFlow<BarcodeScannerUiState> = _uiState.asStateFlow()
+    val detectedBounds = barcodeScanner.detectedBounds
 
     init {
         // Collect scan results from the scanner
@@ -30,6 +42,13 @@ class BarcodeScannerViewModel @Inject constructor(private val barcodeScanner: ML
                     is ScanResult.BarcodeResult -> {
                         // Stop scanning and show result
                         barcodeScanner.stopScanning()
+                        historyStore.add(
+                            ScanHistoryEntry(
+                                mode = ScannerMode.BARCODE,
+                                title = result.scan.summary,
+                                subtitle = result.format.name
+                            )
+                        )
                         _uiState.value = BarcodeScannerUiState.Success(result)
                     }
 
@@ -38,7 +57,9 @@ class BarcodeScannerViewModel @Inject constructor(private val barcodeScanner: ML
                         _uiState.value = BarcodeScannerUiState.Error(result.message)
                     }
 
-                    is ScanResult.NoResult, is ScanResult.TextResult -> {
+                    is ScanResult.NoResult,
+                    is ScanResult.TextResult,
+                    is ScanResult.DocumentResult -> {
                         // Continue scanning for barcode results
                     }
                 }
@@ -57,6 +78,12 @@ class BarcodeScannerViewModel @Inject constructor(private val barcodeScanner: ML
         barcodeScanner.stopScanning()
     }
 
+    fun scanImage(context: Context, uri: Uri) {
+        barcodeScanner.stopScanning()
+        _uiState.value = BarcodeScannerUiState.Scanning
+        barcodeScanner.scanImage(context, uri)
+    }
+
     /** Resume scanning after showing a result or error */
     fun resumeScanning() {
         startScanning()
@@ -64,7 +91,30 @@ class BarcodeScannerViewModel @Inject constructor(private val barcodeScanner: ML
 
     /** Get the image analyzer for CameraX integration */
     suspend fun getImageAnalyzer(): ImageAnalysis.Analyzer {
-        return barcodeScanner.getImageAnalyzer()
+        return barcodeScanner.getImageAnalyzer(
+            analysisExecutor = Executors.newSingleThreadExecutor()
+        )
+    }
+
+    fun getImageAnalyzer(
+        analysisExecutor: ExecutorService,
+        cameraController: LifecycleCameraController,
+    ): ImageAnalysis.Analyzer {
+        val maxZoomRatio = cameraController.cameraInfo?.zoomState?.value?.maxZoomRatio ?: 1f
+        return barcodeScanner.getImageAnalyzer(
+            analysisExecutor = analysisExecutor,
+            maxSupportedZoomRatio = maxZoomRatio,
+            onZoomSuggestion = { zoomRatio ->
+                runCatching {
+                    cameraController.setZoomRatio(zoomRatio)
+                }.isSuccess
+            }
+        )
+    }
+
+    override fun onCleared() {
+        barcodeScanner.close()
+        super.onCleared()
     }
 }
 

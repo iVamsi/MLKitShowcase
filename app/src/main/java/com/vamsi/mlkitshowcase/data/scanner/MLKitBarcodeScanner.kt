@@ -1,171 +1,167 @@
 package com.vamsi.mlkitshowcase.data.scanner
 
+import android.content.Context
+import android.graphics.Rect
+import android.net.Uri
 import androidx.camera.core.ImageAnalysis
-import androidx.camera.core.ImageProxy
+import androidx.camera.mlkit.vision.MlKitAnalyzer
 import com.google.mlkit.common.MlKitException
 import com.google.mlkit.vision.barcode.BarcodeScanner
 import com.google.mlkit.vision.barcode.BarcodeScannerOptions
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.ZoomSuggestionOptions
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
-import com.vamsi.mlkitshowcase.domain.model.BarcodeFormat
 import com.vamsi.mlkitshowcase.domain.model.ScanResult
-import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.receiveAsFlow
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
 import javax.inject.Inject
-import javax.inject.Singleton
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
 
-/**
- * ML Kit Barcode Scanner implementation
- *
- * This class demonstrates how to use ML Kit's on-device barcode scanning capabilities.
- *
- * Key features:
- * - On-device processing (no internet required after model download)
- * - Supports multiple barcode formats
- * - Real-time scanning with CameraX integration
- * - Automatic model download on first use
- *
- * Usage:
- * 1. Call startScanning() to begin
- * 2. Use getImageAnalyzer() with CameraX
- * 3. Collect results from scanResults flow
- * 4. Call stopScanning() when done
- */
-@Singleton
 class MLKitBarcodeScanner @Inject constructor() {
 
-    // Configure scanner for common barcode formats
-    private val scannerOptions = BarcodeScannerOptions.Builder()
-        .setBarcodeFormats(
-            // 1D Barcodes
-            Barcode.FORMAT_CODE_128,
-            Barcode.FORMAT_CODE_39,
-            Barcode.FORMAT_CODE_93,
-            Barcode.FORMAT_CODABAR,
-            Barcode.FORMAT_EAN_13,
-            Barcode.FORMAT_EAN_8,
-            Barcode.FORMAT_ITF,
-            Barcode.FORMAT_UPC_A,
-            Barcode.FORMAT_UPC_E,
-            // 2D Barcodes
-            Barcode.FORMAT_QR_CODE,
-            Barcode.FORMAT_DATA_MATRIX,
-            Barcode.FORMAT_PDF417,
-            Barcode.FORMAT_AZTEC
-        )
-        .build()
+    private val _scanResults = MutableSharedFlow<ScanResult>(
+        extraBufferCapacity = 4,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
+    val scanResults: Flow<ScanResult> = _scanResults.asSharedFlow()
 
-    private val scanner: BarcodeScanner by lazy {
-        BarcodeScanning.getClient(scannerOptions)
-    }
+    private val _detectedBounds = MutableStateFlow<List<Rect>>(emptyList())
+    val detectedBounds: StateFlow<List<Rect>> = _detectedBounds.asStateFlow()
 
-    private val _scanResults = Channel<ScanResult>(Channel.UNLIMITED)
-    val scanResults: Flow<ScanResult> = _scanResults.receiveAsFlow()
-
+    private var activeScanner: BarcodeScanner? = null
     private var isScanning = false
+    private val resultGate = ConsecutiveBarcodeResultGate(requiredMatches = 2)
 
-    /**
-     * Start the scanning process
-     */
     fun startScanning() {
+        resultGate.reset()
+        _detectedBounds.value = emptyList()
         isScanning = true
     }
 
-    /**
-     * Stop the scanning process
-     */
     fun stopScanning() {
         isScanning = false
+        _detectedBounds.value = emptyList()
     }
 
-    /**
-     * Get ImageAnalysis.Analyzer for CameraX integration
-     */
-    fun getImageAnalyzer(): ImageAnalysis.Analyzer {
-        return BarcodeAnalyzer(scanner) { result ->
-            if (isScanning) {
-                _scanResults.trySend(result)
+    fun close() {
+        stopScanning()
+        activeScanner?.close()
+        activeScanner = null
+    }
+
+    fun getImageAnalyzer(
+        analysisExecutor: Executor = Executors.newSingleThreadExecutor(),
+        maxSupportedZoomRatio: Float = 1f,
+        onZoomSuggestion: (Float) -> Boolean = { false },
+    ): ImageAnalysis.Analyzer {
+        activeScanner?.close()
+        val scanner = BarcodeScanning.getClient(
+            scannerOptions(
+                maxSupportedZoomRatio = maxSupportedZoomRatio,
+                onZoomSuggestion = onZoomSuggestion
+            )
+        )
+        activeScanner = scanner
+
+        return MlKitAnalyzer(
+            listOf(scanner),
+            ImageAnalysis.COORDINATE_SYSTEM_VIEW_REFERENCED,
+            analysisExecutor
+        ) { result ->
+            if (!isScanning) return@MlKitAnalyzer
+
+            val throwable = result.getThrowable(scanner)
+            if (throwable != null) {
+                _scanResults.tryEmit(ScanResult.Error(throwable.toScanMessage(), throwable))
+                return@MlKitAnalyzer
+            }
+
+            val barcodeResults = result.getValue(scanner)
+                .orEmpty()
+                .map(BarcodeResultMapper::map)
+            _detectedBounds.value = barcodeResults.mapNotNull { it.boundingBox }
+
+            val barcodeResult = barcodeResults.firstOrNull { it.value.isNotBlank() }
+
+            if (barcodeResult == null) {
+                _scanResults.tryEmit(ScanResult.NoResult)
+                return@MlKitAnalyzer
+            }
+
+            resultGate.accept(barcodeResult)?.let {
+                _scanResults.tryEmit(ScanResult.BarcodeResult(it))
             }
         }
     }
 
-    /**
-     * ImageAnalysis.Analyzer implementation for barcode scanning
-     */
-    private class BarcodeAnalyzer(
-        private val scanner: BarcodeScanner,
-        private val onResult: (ScanResult) -> Unit,
-    ) : ImageAnalysis.Analyzer {
-
-        private var lastAnalyzedTimestamp = 0L
-        private val analyzeEveryMs = 100L // Process every 100ms for battery optimization
-
-        @androidx.camera.core.ExperimentalGetImage
-        override fun analyze(imageProxy: ImageProxy) {
-            val currentTimestamp = System.currentTimeMillis()
-            if (currentTimestamp - lastAnalyzedTimestamp < analyzeEveryMs) {
-                imageProxy.close()
-                return
-            }
-            lastAnalyzedTimestamp = currentTimestamp
-            val mediaImage = imageProxy.image
-            if (mediaImage != null) {
-                val image = InputImage.fromMediaImage(
-                    mediaImage,
-                    imageProxy.imageInfo.rotationDegrees
+    fun scanImage(context: Context, uri: Uri) {
+        val scanner = BarcodeScanning.getClient(scannerOptions())
+        val image = InputImage.fromFilePath(context, uri)
+        scanner.process(image)
+            .addOnSuccessListener { barcodes ->
+                val barcodeResults = barcodes.map(BarcodeResultMapper::map)
+                _detectedBounds.value = barcodeResults.mapNotNull { it.boundingBox }
+                val barcode = barcodeResults
+                    .firstOrNull { it.value.isNotBlank() }
+                _scanResults.tryEmit(
+                    barcode?.let { ScanResult.BarcodeResult(it) } ?: ScanResult.NoResult
                 )
-
-                scanner.process(image)
-                    .addOnSuccessListener { barcodes ->
-                        if (barcodes.isNotEmpty()) {
-                            val barcode = barcodes[0] // Take first barcode found
-                            val result = ScanResult.BarcodeResult(
-                                value = barcode.displayValue ?: barcode.rawValue ?: "",
-                                format = barcode.format.toBarcodeFormat(),
-                                rawBytes = barcode.rawBytes
-                            )
-                            onResult(result)
-                        } else {
-                            onResult(ScanResult.NoResult)
-                        }
-                    }
-                    .addOnFailureListener { exception ->
-                        val errorMessage = when (exception) {
-                            is MlKitException -> when (exception.errorCode) {
-                                MlKitException.UNAVAILABLE -> "Downloading scanner model, please wait..."
-                                MlKitException.NOT_ENOUGH_SPACE -> "Not enough storage for ML models"
-                                else -> "Scanning failed: ${exception.message}"
-                            }
-
-                            else -> "Scanning failed: ${exception.message}"
-                        }
-                        onResult(ScanResult.Error(errorMessage, exception))
-                    }
-                    .addOnCompleteListener {
-                        imageProxy.close()
-                    }
-            } else {
-                imageProxy.close()
             }
+            .addOnFailureListener { throwable ->
+                _scanResults.tryEmit(ScanResult.Error(throwable.toScanMessage(), throwable))
+            }
+            .addOnCompleteListener {
+                scanner.close()
+            }
+    }
+
+    private fun scannerOptions(
+        maxSupportedZoomRatio: Float = 1f,
+        onZoomSuggestion: (Float) -> Boolean = { false },
+    ): BarcodeScannerOptions {
+        val builder = BarcodeScannerOptions.Builder()
+            .setBarcodeFormats(
+                Barcode.FORMAT_CODE_128,
+                Barcode.FORMAT_CODE_39,
+                Barcode.FORMAT_CODE_93,
+                Barcode.FORMAT_CODABAR,
+                Barcode.FORMAT_EAN_13,
+                Barcode.FORMAT_EAN_8,
+                Barcode.FORMAT_ITF,
+                Barcode.FORMAT_UPC_A,
+                Barcode.FORMAT_UPC_E,
+                Barcode.FORMAT_QR_CODE,
+                Barcode.FORMAT_DATA_MATRIX,
+                Barcode.FORMAT_PDF417,
+                Barcode.FORMAT_AZTEC
+            )
+            .enableAllPotentialBarcodes()
+
+        if (maxSupportedZoomRatio > 1f) {
+            builder.setZoomSuggestionOptions(
+                ZoomSuggestionOptions.Builder(onZoomSuggestion)
+                    .setMaxSupportedZoomRatio(maxSupportedZoomRatio)
+                    .build()
+            )
         }
 
-        private fun Int.toBarcodeFormat(): BarcodeFormat = when (this) {
-            Barcode.FORMAT_CODE_128 -> BarcodeFormat.CODE_128
-            Barcode.FORMAT_CODE_39 -> BarcodeFormat.CODE_39
-            Barcode.FORMAT_CODE_93 -> BarcodeFormat.CODE_93
-            Barcode.FORMAT_CODABAR -> BarcodeFormat.CODABAR
-            Barcode.FORMAT_DATA_MATRIX -> BarcodeFormat.DATA_MATRIX
-            Barcode.FORMAT_EAN_13 -> BarcodeFormat.EAN_13
-            Barcode.FORMAT_EAN_8 -> BarcodeFormat.EAN_8
-            Barcode.FORMAT_ITF -> BarcodeFormat.ITF
-            Barcode.FORMAT_QR_CODE -> BarcodeFormat.QR_CODE
-            Barcode.FORMAT_UPC_A -> BarcodeFormat.UPC_A
-            Barcode.FORMAT_UPC_E -> BarcodeFormat.UPC_E
-            Barcode.FORMAT_PDF417 -> BarcodeFormat.PDF417
-            Barcode.FORMAT_AZTEC -> BarcodeFormat.AZTEC
-            else -> BarcodeFormat.UNKNOWN
+        return builder.build()
+    }
+
+    private fun Throwable.toScanMessage(): String = when (this) {
+        is MlKitException -> when (errorCode) {
+            MlKitException.UNAVAILABLE -> "Barcode scanner is not available yet."
+            MlKitException.NOT_ENOUGH_SPACE -> "Not enough storage for ML Kit barcode models."
+            else -> "Barcode scanning failed: ${message ?: "unknown error"}"
         }
+
+        else -> "Barcode scanning failed: ${message ?: "unknown error"}"
     }
 }
