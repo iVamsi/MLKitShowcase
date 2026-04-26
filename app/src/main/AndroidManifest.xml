@@ -5,14 +5,9 @@
     <!-- Camera permissions -->
     <uses-permission android:name="android.permission.CAMERA" />
     
-    <!-- Internet permission for ML Kit model downloads (optional) -->
-    <uses-permission android:name="android.permission.INTERNET" />
-    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-    
-    <!-- ML Kit automatically downloads models on first use -->
     <uses-feature
         android:name="android.hardware.camera"
-        android:required="true" />
+        android:required="false" />
     <uses-feature
         android:name="android.hardware.camera.autofocus"
         android:required="false" />
@@ -28,11 +23,16 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.ScannerDemo"
         tools:targetApi="31">
-        
-        <!-- ML Kit model downloads -->
-        <meta-data
-            android:name="com.google.mlkit.vision.DEPENDENCIES"
-            android:value="barcode,ocr" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
         
         <activity
             android:name=".MainActivity"

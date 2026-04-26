@@ -97,14 +97,14 @@ class BarcodeScannerViewModelTest {
     fun `getImageAnalyzer should return analyzer from scanner`() = runTest {
         // Given
         val mockAnalyzer = mockk<ImageAnalysis.Analyzer>()
-        coEvery { mockBarcodeScanner.getImageAnalyzer() } returns mockAnalyzer
+        every { mockBarcodeScanner.getImageAnalyzer(any(), any(), any()) } returns mockAnalyzer
 
         // When
         val result = viewModel.getImageAnalyzer()
 
         // Then
         assertThat(result).isEqualTo(mockAnalyzer)
-        coVerify { mockBarcodeScanner.getImageAnalyzer() }
+        verify { mockBarcodeScanner.getImageAnalyzer(any(), any(), any()) }
     }
 
     @Test

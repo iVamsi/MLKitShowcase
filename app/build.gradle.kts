@@ -1,6 +1,5 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
@@ -9,12 +8,12 @@ plugins {
 
 android {
     namespace = "com.vamsi.mlkitshowcase"
-    compileSdk = 36
+    compileSdk = 37
 
     defaultConfig {
         applicationId = "com.vamsi.mlkitshowcase"
         minSdk = 24
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0"
 
@@ -36,12 +35,8 @@ android {
     }
 
     compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_21
-        targetCompatibility = JavaVersion.VERSION_21
-    }
-
-    kotlinOptions {
-        jvmTarget = "21"
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
     }
 
     buildFeatures {
@@ -86,9 +81,7 @@ dependencies {
     implementation(libs.androidx.camera.camera2)
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.camera.view)
-    
-    // Permissions
-    implementation(libs.accompanist.permissions)
+    implementation(libs.androidx.camera.mlkit.vision)
     
     // Dependency Injection
     implementation(libs.hilt.android)
@@ -97,27 +90,28 @@ dependencies {
     
     // Coroutines
     implementation(libs.kotlinx.coroutines.android)
+
+    // ML Kit flows powered by Google Play services
+    implementation(libs.mlkit.document.scanner)
     
     // Testing
     testImplementation(libs.junit)
-    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
-    testImplementation("io.mockk:mockk:1.13.8")
-    testImplementation("androidx.arch.core:core-testing:2.2.0")
-    testImplementation("org.robolectric:robolectric:4.11.1")
-    testImplementation("com.google.truth:truth:1.1.4")
-    testImplementation("org.jetbrains.kotlin:kotlin-test:1.9.10")
+    testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.mockk)
+    testImplementation(libs.androidx.arch.core.testing)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.truth)
+    testImplementation(libs.kotlin.test)
     
     // Android Testing
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.ui.test.junit4)
-    androidTestImplementation("androidx.compose.ui:ui-test-manifest")
-    androidTestImplementation("androidx.test:core:1.5.0")
-    androidTestImplementation("androidx.test:runner:1.5.2")
-    androidTestImplementation("androidx.test.ext:junit:1.1.5")
-    androidTestImplementation("com.google.dagger:hilt-android-testing:2.48")
-    kspAndroidTest("com.google.dagger:hilt-compiler:2.48")
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.hilt.android.testing)
+    kspAndroidTest(libs.hilt.compiler)
     
     // Debug implementations
     debugImplementation(libs.androidx.ui.tooling)
@@ -158,7 +152,7 @@ tasks.register<JacocoReport>("jacocoTestReport") {
         "**/*_Kt*"
     )
 
-    val debugTree = fileTree("${buildDir}/tmp/kotlin-classes/debug") {
+    val debugTree = fileTree(layout.buildDirectory.dir("tmp/kotlin-classes/debug")) {
         exclude(fileFilter)
     }
     
@@ -166,7 +160,7 @@ tasks.register<JacocoReport>("jacocoTestReport") {
 
     sourceDirectories.setFrom(files(mainSrc))
     classDirectories.setFrom(files(debugTree))
-    executionData.setFrom(fileTree(buildDir) {
+    executionData.setFrom(fileTree(layout.buildDirectory) {
         include("jacoco/testDebugUnitTest.exec", "outputs/code_coverage/debugAndroidTest/connected/**/*.ec")
     })
 }
@@ -200,7 +194,7 @@ tasks.register("jacocoTestCoverageVerification", JacocoCoverageVerification::cla
         "**/*_Kt*"
     )
 
-    classDirectories.setFrom(files(fileTree("${buildDir}/tmp/kotlin-classes/debug") {
+    classDirectories.setFrom(files(fileTree(layout.buildDirectory.dir("tmp/kotlin-classes/debug")) {
         exclude(fileFilter)
     }))
 }
