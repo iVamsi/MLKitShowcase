@@ -120,7 +120,7 @@ dependencies {
 
 // Jacoco Configuration for Test Coverage
 jacoco {
-    toolVersion = "0.8.15"
+    toolVersion = "0.8.16"
 }
 
 tasks.register<JacocoReport>("jacocoTestReport") {
